@@ -13,13 +13,40 @@ def resolved(value):
     return Path(value).expanduser().resolve()
 
 
+def find_weight_root(root):
+    """Find the existing weight32 checkout above a standalone OGSC checkout."""
+    root = resolved(root)
+    for candidate in (root, *root.parents):
+        if (candidate / WEIGHT).is_dir():
+            return candidate
+    return root
+
+
+def find_oracle_root(root):
+    """Find the existing oracle checkout beside the working OGSC repository."""
+    root = resolved(root)
+    seen = set()
+    for ancestor in (root, *root.parents):
+        for candidate in (ancestor / 'Hmark_inmodel', ancestor):
+            candidate = candidate.resolve()
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            try:
+                oracle_directory(candidate)
+            except RuntimeError:
+                continue
+            return candidate
+    return root.parent.parent / 'Hmark_inmodel'
+
+
 def default_paths(args):
     def get(name, fallback=None):
         return getattr(args, name, None) or os.environ.get(f'OGSC_{name.upper()}') or fallback
-    weight = resolved(get('weight32_repo', ROOT))
+    weight = resolved(get('weight32_repo', find_weight_root(ROOT)))
     source = resolved(get('source_run', weight / WEIGHT / 'server21/files/var/lib/structure32_student12500/runs/structure32'))
     teacher = get('teacher_clean')
-    oracle = resolved(get('oracle_repo', ROOT.parent.parent / 'Hmark_inmodel'))
+    oracle = resolved(get('oracle_repo', find_oracle_root(ROOT)))
     return {
         'weight32_repo': str(weight), 'source_run': str(source),
         'carrier_dir': str(resolved(get('carrier_dir', source / 'carrier'))),
@@ -29,6 +56,7 @@ def default_paths(args):
         'output_run': str(resolved(get('output_run', weight / 'runs/ogsc32'))),
         'student_runner': str(resolved(get('student_runner', ROOT / 'structure_student12500/campaign.py'))),
         'student_source_run': str(resolved(get('student_source_run', ROOT / 'structure_student12500/data/threshold_quality_20261022/structure_margin_20261026/structure_margin_native'))),
+        'baseline_run': str(resolved(get('baseline_run', weight / 'runs/ogsc32'))),
         'offload': bool(getattr(args, 'offload', False)),
     }
 

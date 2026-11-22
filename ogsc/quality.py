@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from .control import one_step
+from .control import OBJECTIVE, one_step
 from .generation import _decode, _rows, _save_png, image_name
 from .progress import progress_line
 from .state import atomic_path, read_json, sha256, write_json
@@ -180,11 +180,13 @@ def tune_gamma(paths, sources):
             write_json(trial_dir / 'quality.json', trial)
         selected = select_gamma(trials)
         if selected is None:
-            payload = {'status': 'NO_POSITIVE_GAMMA_PASSES', 'gamma': None, 'upper_bound': upper,
+            payload = {'status': 'NO_POSITIVE_GAMMA_PASSES', 'objective': OBJECTIVE,
+                       'gamma': None, 'upper_bound': upper,
                        'trials': trials, 'limits': {'mean_paired_lpips': .15, 'mean_clip_drop': .01}}
             write_json(output / 'calibration/gamma.json', payload)
             raise RuntimeError('No positive gamma candidate passed validation quality constraints')
-        payload = {'status': 'selected', 'gamma': selected, 'upper_bound': upper,
+        payload = {'status': 'selected', 'objective': OBJECTIVE,
+                   'gamma': selected, 'upper_bound': upper,
                    'selection': 'largest measured positive validation candidate passing mean LPIPS and CLIP drop',
                    'trials': trials, 'limits': {'mean_paired_lpips': .15, 'mean_clip_drop': .01},
                    'validation_prompts_sha256': sha256(source / 'prompts.json')}

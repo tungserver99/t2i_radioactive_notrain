@@ -30,19 +30,29 @@ class SoftMinControllerTests(unittest.TestCase):
         self.assertEqual(select_gamma(trials), .3)
         self.assertIsNone(select_gamma([{'gamma': .1, 'passes': False}]))
 
-    def test_objective_is_stable_and_prioritizes_weak_coordinates(self):
-        from ogsc.control import soft_min_loss
+    def test_bitwise_loss_matches_independent_softplus_for_all_32_bits(self):
+        import torch.nn.functional as functional
+        from ogsc.control import bitwise_loss
 
-        signed = torch.tensor([[1000.0] * 31 + [-2.0]], requires_grad=True)
-        loss = soft_min_loss(signed)
-        self.assertTrue(torch.isfinite(loss).all())
-        self.assertLess(loss.item(), 0.0)
+        signed = torch.linspace(-3, 4, 64, dtype=torch.float64).reshape(2, 32)
+        actual = bitwise_loss(signed)
+        expected = functional.softplus(-signed).mean(dim=-1)
 
-        weights, = torch.autograd.grad(loss.sum(), signed)
-        self.assertLess(weights[0, -1].item(), weights[0, 0].item())
+        torch.testing.assert_close(actual, expected)
+        self.assertEqual(tuple(actual.shape), (2,))
 
-    def test_one_step_has_one_vjp_and_reduces_tiny_softmin(self):
-        from ogsc.control import one_step, soft_min_loss
+    def test_bitwise_loss_rejects_wrong_shape_and_nonfinite_coordinates(self):
+        from ogsc.control import bitwise_loss
+
+        with self.assertRaisesRegex(ValueError, r"Expected \[batch, 32\]"):
+            bitwise_loss(torch.zeros(2, 31))
+        invalid = torch.zeros(1, 32)
+        invalid[0, 7] = float('nan')
+        with self.assertRaisesRegex(ValueError, 'Nonfinite'):
+            bitwise_loss(invalid)
+
+    def test_one_step_has_one_vjp_and_reduces_bitwise_loss(self):
+        from ogsc.control import bitwise_loss, one_step
 
         torch.manual_seed(9)
         model = torch.nn.Linear(8, 32, bias=False).eval().requires_grad_(False)
@@ -53,7 +63,7 @@ class SoftMinControllerTests(unittest.TestCase):
         self.assertEqual(grad_call.call_count, 1)
         self.assertEqual(marked.shape, latent.shape)
         self.assertTrue(torch.isfinite(marked).all())
-        loss_after = soft_min_loss(model(marked)).item()
+        loss_after = bitwise_loss(model(marked)).item()
         self.assertLess(loss_after, diagnostics['loss_before'])
         for parameter, value in zip(model.parameters(), before):
             torch.testing.assert_close(parameter, value)

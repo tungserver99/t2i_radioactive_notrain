@@ -14,15 +14,17 @@ from .carrier_bridge import Sources
 from .evaluate import score_outputs
 from .generation import generate_one, generate_split
 from .paths import default_paths, validate_run_inputs
-from .progress import stage_progress
+from .progress import stage_progress, tee_run_log
 from .quality import tune_gamma
 from .state import read_json, sha256, write_json
+from .control import OBJECTIVE
 
 
 def _parser():
     parser = argparse.ArgumentParser(prog='python -m ogsc.run')
     sub = parser.add_subparsers(dest='command', required=True)
     for name in ('prepare', 'smoke', 'tune-gamma', 'generate-one', 'generate-teacher', 'evaluate-teacher',
+                 'bitwise-validation',
                  'train-student', 'evaluate-student', 'full'):
         cmd = sub.add_parser(name)
         for arg in ('weight32-repo', 'oracle-repo', 'source-run', 'carrier-dir', 'teacher-clean',
@@ -35,6 +37,8 @@ def _parser():
             cmd.add_argument('--prompt', required=True)
             cmd.add_argument('--seed', required=True, type=int)
             cmd.add_argument('--output-image')
+        if name == 'bitwise-validation':
+            cmd.add_argument('--baseline-run')
     return parser
 
 
@@ -46,6 +50,9 @@ def _prepare(paths):
     provenance_path = output / 'provenance.json'
     prior = read_json(provenance_path) if provenance_path.is_file() else None
     if prior is not None:
+        if prior.get('objective') != OBJECTIVE:
+            raise RuntimeError('Existing output belongs to the previous soft-min objective; '
+                               'use the separate bitwise output directory')
         if (prior.get('source_files_sha256') != inputs['source_sha256']
                 or prior.get('source_run_sha256') != inputs['source_run_sha256']
                 or prior.get('carrier_artifact_sha256') != hashes):
@@ -67,7 +74,8 @@ def _prepare(paths):
             versions.append(implementation_sha256)
     else:
         provenance = {
-        'protocol': 'OGSC-32 soft-min final-latent one-step',
+        'protocol': f'OGSC-32 {OBJECTIVE} final-latent one-step',
+        'objective': OBJECTIVE,
         'code_git_commit': _git_commit(), 'source_files_sha256': inputs['source_sha256'],
         'implementation_sha256': implementation_sha256,
         'source_run_sha256': inputs['source_run_sha256'], 'carrier_artifact_sha256': hashes,
@@ -91,6 +99,76 @@ def _prepare(paths):
     return inputs, carrier
 
 
+def _prepare_bitwise_validation(paths):
+    """Prepare an isolated run while reusing the already verified baseline model."""
+    from .bitwise_experiment import FIXED_GAMMA
+
+    baseline = Path(paths['baseline_run'])
+    if Path(paths['output_run']).resolve() == baseline.resolve():
+        raise RuntimeError('Bitwise validation requires a separate output directory; the old run is read-only')
+    baseline_provenance_path = baseline / 'provenance.json'
+    if not baseline_provenance_path.is_file():
+        print('OGSC bitwise prepare: no prior provenance; using standard pinned-model preparation.', flush=True)
+        return _prepare(paths)
+
+    baseline_provenance = read_json(baseline_provenance_path)
+    inputs = validate_run_inputs(paths)
+    _, carrier_hashes = verify_carrier(paths)
+    if sorted(baseline_provenance.get('source_files_sha256', {}).values()) != sorted(inputs['source_sha256'].values()):
+        raise RuntimeError('Weight32/oracle source files differ from the completed baseline run')
+    if baseline_provenance.get('source_run_sha256') != inputs['source_run_sha256']:
+        raise RuntimeError('Source config/prompts/assets differ from the completed baseline run')
+    if baseline_provenance.get('carrier_artifact_sha256') != carrier_hashes:
+        raise RuntimeError('Original carrier differs from the completed baseline run')
+    model_value = baseline_provenance.get('resolved_model_path')
+    model_path = Path(model_value).expanduser() if model_value else None
+    if model_path is None or not model_path.is_dir():
+        print('OGSC bitwise prepare: previously verified model snapshot is unavailable; '
+              'using standard pinned-model preparation.', flush=True)
+        return _prepare(paths)
+    if paths.get('teacher_clean') and Path(paths['teacher_clean']).resolve() != model_path.resolve():
+        raise RuntimeError('The requested clean model differs from the prior validation baseline model')
+
+    output = Path(paths['output_run'])
+    output.mkdir(parents=True, exist_ok=True)
+    (output / 'state').mkdir(parents=True, exist_ok=True)
+    for name, value in (('config.json', inputs['config']), ('prompts.json', inputs['prompts'])):
+        write_json(output / name, value)
+    provenance_path = output / 'provenance.json'
+    if provenance_path.is_file():
+        provenance = read_json(provenance_path)
+        if (provenance.get('objective') != OBJECTIVE
+                or sorted(provenance.get('source_files_sha256', {}).values()) != sorted(inputs['source_sha256'].values())
+                or provenance.get('source_run_sha256') != inputs['source_run_sha256']
+                or provenance.get('carrier_artifact_sha256') != carrier_hashes):
+            raise RuntimeError('Existing bitwise output has a different source/objective; use a new --output-run')
+    else:
+        provenance = dict(baseline_provenance)
+    implementation_hashes = {
+        path.relative_to(Path(__file__).resolve().parents[1]).as_posix(): sha256(path)
+        for path in sorted(Path(__file__).resolve().parent.glob('*.py'))
+    }
+    provenance.update({
+        'protocol': f'OGSC-32 {OBJECTIVE} final-latent one-step',
+        'objective': OBJECTIVE, 'gamma': FIXED_GAMMA,
+        'code_git_commit': _git_commit(), 'implementation_sha256': implementation_hashes,
+        'source_files_sha256': inputs['source_sha256'],
+        'resolved_model_path': str(model_path.resolve()),
+        'baseline_run': str(baseline.resolve()),
+        'output_run': str(output.resolve()), 'created_by': 'ogsc.run bitwise-validation',
+    })
+    paths['teacher_clean'] = str(model_path.resolve())
+    write_json(provenance_path, provenance)
+    stages_path = output / 'state/stages.json'
+    stages = read_json(stages_path) if stages_path.is_file() else {}
+    stages['prepare'] = {'status': 'complete', 'model_reused_from': str(baseline.resolve()),
+                         'carrier_sha256': carrier_hashes}
+    write_json(stages_path, stages)
+    print(f'OGSC bitwise prepare: reusing previously verified pinned model at {model_path}; '
+          'no model download or model-file hashing.', flush=True)
+    return inputs, None
+
+
 def _git_commit():
     try:
         return subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=Path(__file__).resolve().parents[1],
@@ -104,6 +182,8 @@ def _sources(paths):
     if not identity_path.is_file():
         raise RuntimeError('Run `python -m ogsc.run prepare` first')
     identity = read_json(identity_path)
+    if identity.get('objective') != OBJECTIVE:
+        raise RuntimeError('Prepared output belongs to a different objective; use a separate output directory')
     paths['teacher_clean'] = identity['resolved_model_path']
     if not Path(paths['teacher_clean']).is_dir():
         raise RuntimeError(f"Prepared clean model snapshot is missing: {paths['teacher_clean']}")
@@ -135,6 +215,8 @@ def _gamma_is_reusable(paths):
             raise RuntimeError('OGSC images exist but gamma artifact is missing; refusing to retune mid-run')
         return None
     gamma = read_json(gamma_path)
+    if gamma.get('objective') != OBJECTIVE:
+        raise RuntimeError('Existing gamma was selected for a different objective; use a new --output-run')
     if gamma.get('status') != 'selected' or gamma.get('gamma') is None or float(gamma['gamma']) <= 0:
         raise RuntimeError('Existing gamma artifact has no selected positive gamma; inspect it or use a new output run')
     expected_prompts = sha256(Path(paths['source_run']) / 'prompts.json')
@@ -147,17 +229,18 @@ def _record_gamma(paths, gamma):
     provenance_path = Path(paths['output_run']) / 'provenance.json'
     provenance = read_json(provenance_path)
     provenance['gamma'] = gamma['gamma']
+    provenance['objective'] = OBJECTIVE
     provenance['gamma_sha256'] = sha256(Path(paths['output_run']) / 'calibration/gamma.json')
     write_json(provenance_path, provenance)
 
 
 def _smoke(paths):
-    from .control import one_step, soft_min_loss
+    from .control import bitwise_loss, one_step
     torch.manual_seed(31)
     model = torch.nn.Linear(12, 32, bias=False).eval().requires_grad_(False)
     latent = torch.randn(1, 12)
     marked, info = one_step(latent, model, 1e-4)
-    if not soft_min_loss(model(marked)).item() < info['loss_before']:
+    if not bitwise_loss(model(marked)).item() < info['loss_before']:
         raise RuntimeError('Smoke objective did not improve at small gamma')
     _update_stage(paths, 'smoke', {'device': 'cpu', 'vjp': 1, 'gamma_zero_supported': True})
     print('OGSC CPU smoke passed (toy model only; no SD model/GPU loaded).')
@@ -199,7 +282,7 @@ def _write_report(paths, student_result):
     metrics = read_json(output / 'result/teacher_key_metrics.json')
     gamma = read_json(output / 'calibration/gamma.json')
     lines = ['# OGSC-32 run summary', '',
-             'Teacher images were generated from clean SD2.1 with one final-latent soft-min control step.',
+             f'Teacher images were generated from clean SD2.1 with the {OBJECTIVE} final-latent control step.',
              'This report records measured code outputs only; it is not a claim of research success or student transfer.',
              '', f"- Selected validation gamma: `{gamma.get('gamma')}`",
              '- Gamma selection used paired validation quality only; test FKR was not used.',
@@ -225,9 +308,7 @@ def _write_report(paths, student_result):
     return {'summary': str(path), 'sha256': sha256(path), 'student_status': student_result['status']}
 
 
-def main(argv=None):
-    args = _parser().parse_args(argv)
-    paths = default_paths(args)
+def _execute_command(args, paths):
     try:
         if args.command == 'prepare':
             with stage_progress('prepare inputs, hashes, and pinned model'):
@@ -267,6 +348,17 @@ def main(argv=None):
                 result = _write_report(paths, student)
             _update_stage(paths, 'report', result)
             return 0
+        if args.command == 'bitwise-validation':
+            with stage_progress('prepare isolated bitwise validation output and pinned model'):
+                _prepare_bitwise_validation(paths)
+            with stage_progress('validate frozen carrier and source modules'):
+                sources = _sources(paths)
+            from .bitwise_experiment import run_bitwise_validation
+            with stage_progress('run fixed-gamma 1,000-prompt validation comparison'):
+                result = run_bitwise_validation(paths, sources)
+            _update_stage(paths, 'bitwise_validation', result)
+            print(json.dumps(result, indent=2, default=str))
+            return 0
         if args.command == 'train-student':
             _student(paths); return 0
         if args.command == 'evaluate-student':
@@ -299,6 +391,17 @@ def main(argv=None):
         if getattr(args, 'debug', False):
             traceback.print_exc()
         return 2
+
+
+def main(argv=None):
+    args = _parser().parse_args(argv)
+    paths = default_paths(args)
+    if (args.command == 'bitwise-validation' and not args.output_run
+            and not os.environ.get('OGSC_OUTPUT_RUN')):
+        paths['output_run'] = str(Path(paths['weight32_repo']) / 'runs/ogsc32_bitwise_validation')
+    log_path = Path(paths['output_run']) / 'logs' / f'{args.command.replace("-", "_")}.log'
+    with tee_run_log(log_path, args.command):
+        return _execute_command(args, paths)
 
 
 if __name__ == '__main__':

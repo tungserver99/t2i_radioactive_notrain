@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from ogsc.control import OBJECTIVE
 from ogsc.state import read_json, sha256, write_json
 
 
@@ -23,7 +24,7 @@ class FullRunResumeTests(unittest.TestCase):
         from ogsc.run import _gamma_is_reusable
 
         write_json(self.output / 'calibration/gamma.json', {
-            'status': 'selected', 'gamma': .123,
+            'status': 'selected', 'objective': OBJECTIVE, 'gamma': .123,
             'validation_prompts_sha256': sha256(self.source / 'prompts.json')})
         self.assertEqual(_gamma_is_reusable(self.paths)['gamma'], .123)
 
@@ -31,8 +32,14 @@ class FullRunResumeTests(unittest.TestCase):
         from ogsc.run import _gamma_is_reusable
 
         write_json(self.output / 'calibration/gamma.json', {
-            'status': 'selected', 'gamma': .123, 'validation_prompts_sha256': 'stale'})
+            'status': 'selected', 'objective': OBJECTIVE, 'gamma': .123,
+            'validation_prompts_sha256': 'stale'})
         with self.assertRaisesRegex(RuntimeError, 'validation prompts changed'):
+            _gamma_is_reusable(self.paths)
+        write_json(self.output / 'calibration/gamma.json', {
+            'status': 'selected', 'gamma': .123,
+            'validation_prompts_sha256': sha256(self.source / 'prompts.json')})
+        with self.assertRaisesRegex(RuntimeError, 'different objective'):
             _gamma_is_reusable(self.paths)
         (self.output / 'calibration/gamma.json').unlink()
         image_dir = self.output / 'images/teacher_clean_train'

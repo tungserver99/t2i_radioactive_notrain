@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 import torch
-from .control import one_step
+from .control import OBJECTIVE, one_step
 from .progress import progress_line
 from .state import atomic_path, read_json, sha256, write_json
 
@@ -170,7 +170,8 @@ def generate_one(paths, sources, prompt, seed, output_image=None):
         raise RuntimeError('Production OGSC inference needs CUDA; local checks use CPU smoke')
     output = Path(paths['output_run'])
     selected = read_json(output / 'calibration/gamma.json')
-    if selected.get('status') != 'selected' or selected.get('gamma') is None:
+    if (selected.get('status') != 'selected' or selected.get('gamma') is None
+            or selected.get('objective') != OBJECTIVE):
         raise RuntimeError('Run tune-gamma and select a positive validation gamma before inference')
     gamma = float(selected['gamma'])
     if output_image is None:
@@ -220,13 +221,15 @@ def generate_split(paths, sources, split):
     gamma = float(read_json(output / 'calibration/gamma.json')['gamma'])
     clean_dir, wm_dir = output / 'images' / f'teacher_clean_{split}', output / 'images' / f'teacher_ogsc_{split}'
     clean_dir.mkdir(parents=True, exist_ok=True); wm_dir.mkdir(parents=True, exist_ok=True)
-    generation = {'split': split, 'gamma': gamma, 'steps': 50, 'cfg': 7.5, 'resolution': [512, 512],
+    generation = {'split': split, 'gamma': gamma, 'objective': OBJECTIVE,
+                  'steps': 50, 'cfg': 7.5, 'resolution': [512, 512],
                   'dtype': 'float16', 'scheduler': 'original SD2.1 PNDM', 'seed_rule': 'config.seed*1000000+image_id',
                   'prompts_sha256': sha256(source / 'prompts.json')}
     prior_generation = wm_dir / 'generation.json'
     if prior_generation.is_file():
         prior = read_json(prior_generation)
-        if (prior.get('split') != split or prior.get('prompts_sha256') != generation['prompts_sha256']
+        if (prior.get('split') != split or prior.get('objective') != OBJECTIVE
+                or prior.get('prompts_sha256') != generation['prompts_sha256']
                 or not math.isclose(float(prior.get('gamma', float('nan'))), gamma,
                                     rel_tol=0, abs_tol=1e-12)):
             raise RuntimeError(f'Existing {split} OGSC outputs use a different split, prompt set, or gamma')
