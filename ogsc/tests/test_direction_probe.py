@@ -18,6 +18,12 @@ from ogsc.direction_probe import (
 
 
 class DirectionProbeLogicTests(unittest.TestCase):
+    def test_launcher_has_no_carriage_returns_and_one_python_command(self):
+        launcher = Path(__file__).resolve().parents[2] / 'run_ogsc32_direction_probe.sh'
+        contents = launcher.read_bytes()
+        self.assertNotIn(b'\r', contents)
+        self.assertEqual(contents.decode('utf-8').strip(), 'python -m ogsc.run direction-probe')
+
     def test_diagnostic_has_a_separate_cli_command(self):
         args = _parser().parse_args(["direction-probe", "--offload"])
         self.assertEqual(args.command, "direction-probe")
