@@ -57,6 +57,7 @@ def default_paths(args):
         'student_runner': str(resolved(get('student_runner', ROOT / 'structure_student12500/campaign.py'))),
         'student_source_run': str(resolved(get('student_source_run', ROOT / 'structure_student12500/data/threshold_quality_20261022/structure_margin_20261026/structure_margin_native'))),
         'baseline_run': str(resolved(get('baseline_run', weight / 'runs/ogsc32'))),
+        'bitwise_run': str(resolved(get('bitwise_run', weight / 'runs/ogsc32_bitwise_validation'))),
         'offload': bool(getattr(args, 'offload', False)),
     }
 

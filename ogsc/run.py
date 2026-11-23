@@ -24,7 +24,7 @@ def _parser():
     parser = argparse.ArgumentParser(prog='python -m ogsc.run')
     sub = parser.add_subparsers(dest='command', required=True)
     for name in ('prepare', 'smoke', 'tune-gamma', 'generate-one', 'generate-teacher', 'evaluate-teacher',
-                 'bitwise-validation', 'direction-probe',
+                 'bitwise-validation', 'direction-probe', 'ofc-validation',
                  'train-student', 'evaluate-student', 'full'):
         cmd = sub.add_parser(name)
         for arg in ('weight32-repo', 'oracle-repo', 'source-run', 'carrier-dir', 'teacher-clean',
@@ -37,8 +37,11 @@ def _parser():
             cmd.add_argument('--prompt', required=True)
             cmd.add_argument('--seed', required=True, type=int)
             cmd.add_argument('--output-image')
-        if name in ('bitwise-validation', 'direction-probe'):
+        if name in ('bitwise-validation', 'direction-probe', 'ofc-validation'):
             cmd.add_argument('--baseline-run')
+        if name == 'ofc-validation':
+            cmd.add_argument('--bitwise-run')
+            cmd.add_argument('--count', type=int, default=256)
     return parser
 
 
@@ -368,6 +371,18 @@ def _execute_command(args, paths):
             _update_stage(paths, 'direction_probe', result)
             print(json.dumps(result, indent=2, default=str))
             return 0
+        if args.command == 'ofc-validation':
+            with stage_progress('validate frozen sources and carrier from bitwise baseline'):
+                source_paths = dict(paths)
+                source_paths['output_run'] = paths['bitwise_run']
+                sources = _sources(source_paths)
+                paths['teacher_clean'] = source_paths['teacher_clean']
+            from .ofc_experiment import run_ofc_validation
+            with stage_progress(f'run paired OFC-32 validation ({args.count} evenly spaced images)'):
+                result = run_ofc_validation(paths, sources, count=args.count)
+            _update_stage(paths, 'ofc_validation', result)
+            print(json.dumps(result, indent=2, default=str))
+            return 0
         if args.command == 'train-student':
             _student(paths); return 0
         if args.command == 'evaluate-student':
@@ -408,6 +423,9 @@ def main(argv=None):
     if (args.command in ('bitwise-validation', 'direction-probe') and not args.output_run
             and not os.environ.get('OGSC_OUTPUT_RUN')):
         paths['output_run'] = str(Path(paths['weight32_repo']) / 'runs/ogsc32_bitwise_validation')
+    if (args.command == 'ofc-validation' and not args.output_run
+            and not os.environ.get('OGSC_OUTPUT_RUN')):
+        paths['output_run'] = str(Path(paths['weight32_repo']) / 'runs/ogsc32_ofc_validation')
     log_path = Path(paths['output_run']) / 'logs' / f'{args.command.replace("-", "_")}.log'
     with tee_run_log(log_path, args.command):
         return _execute_command(args, paths)
