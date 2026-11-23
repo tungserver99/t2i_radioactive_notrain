@@ -24,7 +24,7 @@ def _parser():
     parser = argparse.ArgumentParser(prog='python -m ogsc.run')
     sub = parser.add_subparsers(dest='command', required=True)
     for name in ('prepare', 'smoke', 'tune-gamma', 'generate-one', 'generate-teacher', 'evaluate-teacher',
-                 'bitwise-validation',
+                 'bitwise-validation', 'direction-probe',
                  'train-student', 'evaluate-student', 'full'):
         cmd = sub.add_parser(name)
         for arg in ('weight32-repo', 'oracle-repo', 'source-run', 'carrier-dir', 'teacher-clean',
@@ -37,7 +37,7 @@ def _parser():
             cmd.add_argument('--prompt', required=True)
             cmd.add_argument('--seed', required=True, type=int)
             cmd.add_argument('--output-image')
-        if name == 'bitwise-validation':
+        if name in ('bitwise-validation', 'direction-probe'):
             cmd.add_argument('--baseline-run')
     return parser
 
@@ -359,6 +359,15 @@ def _execute_command(args, paths):
             _update_stage(paths, 'bitwise_validation', result)
             print(json.dumps(result, indent=2, default=str))
             return 0
+        if args.command == 'direction-probe':
+            with stage_progress('validate frozen sources, carrier, and cached bitwise run'):
+                sources = _sources(paths)
+            from .direction_probe import run_direction_probe
+            with stage_progress('diagnose cached 64-image bitwise direction'):
+                result = run_direction_probe(paths, sources)
+            _update_stage(paths, 'direction_probe', result)
+            print(json.dumps(result, indent=2, default=str))
+            return 0
         if args.command == 'train-student':
             _student(paths); return 0
         if args.command == 'evaluate-student':
@@ -396,7 +405,7 @@ def _execute_command(args, paths):
 def main(argv=None):
     args = _parser().parse_args(argv)
     paths = default_paths(args)
-    if (args.command == 'bitwise-validation' and not args.output_run
+    if (args.command in ('bitwise-validation', 'direction-probe') and not args.output_run
             and not os.environ.get('OGSC_OUTPUT_RUN')):
         paths['output_run'] = str(Path(paths['weight32_repo']) / 'runs/ogsc32_bitwise_validation')
     log_path = Path(paths['output_run']) / 'logs' / f'{args.command.replace("-", "_")}.log'

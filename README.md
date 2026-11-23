@@ -25,3 +25,7 @@ The frozen 32-bit carrier, original semantic harness, key-metrics implementation
 The pinned SD2.1 model is resolved from the validated local snapshot or downloaded from Hugging Face by the Python pipeline. No model weights, generated images, run cache, or credentials are tracked by Git.
 
 See [`ogsc/README.md`](ogsc/README.md) for stages, resume behavior, gamma selection, and evaluation details, and [`Codex_OGSC_32bit_Implementation_Spec.md`](Codex_OGSC_32bit_Implementation_Spec.md) for the implementation contract.
+
+## Diagnose the seven weak bit directions
+
+After the bitwise validation run is complete, run `run_ogsc32_direction_probe.sh`. It probes 64 evenly spaced validation samples, reuses the existing clean/bitwise score vectors and FP16 latents, estimates the cached direction, decodes only the small-gamma outputs, and compares frozen FP32 surrogate margins with the original PNG scorer. It does not resample diffusion, score all 1,000 images again, tune gamma, or modify the OGSC controller. The per-bit report is written to `runs/ogsc32_bitwise_validation/result/direction_probe.md` and `.json`; the command resumes from per-sample latent, PNG, and score caches and logs progress to `logs/direction_probe.log`.
